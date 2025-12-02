@@ -6,24 +6,11 @@ import requests
 import os
 from datetime import datetime, timedelta, timezone
 
-# --- ROBUST LANGCHAIN IMPORTS ---
-# 1. Import ChatOpenAI (Handle New vs Old)
-try:
-    from langchain_openai import ChatOpenAI
-except ImportError:
-    from langchain.chat_models import ChatOpenAI
-
-# 2. Import Tool Decorator (Handle New vs Old)
-try:
-    # Try the modern core location
-    from langchain_core.tools import tool
-except ImportError:
-    # Fallback to the classic location (This fixes your specific error)
-    from langchain.tools import tool
-
-# 3. Import Agent Utilities
-from langchain.agents import initialize_agent, AgentType
-from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
+# --- LANGCHAIN IMPORTS ---
+from langchain_openai import ChatOpenAI
+from langchain_core.tools import tool
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain.agents import create_tool_calling_agent, AgentExecutor
 
 app = Flask(__name__)
 request_queue = Queue()
@@ -116,17 +103,18 @@ def run_agent_job(job_data):
         # 2. Setup Tools
         tools = [scrape_linkedin_posts]
 
-        # 3. Construct Agent (SAFE LEGACY METHOD)
-        # Using initialize_agent is safer for mixed versions
-        agent_executor = initialize_agent(
-            tools=tools,
-            llm=llm,
-            agent=AgentType.OPENAI_FUNCTIONS, 
-            verbose=True,
-            handle_parsing_errors=True
-        )
+        # 3. Create Prompt
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", "You are a professional researcher. Fetch data using tools, then summarize."),
+            ("user", "{input}"),
+            MessagesPlaceholder(variable_name="agent_scratchpad"),
+        ])
 
-        # 4. Invoke Agent
+        # 4. Construct Agent
+        agent = create_tool_calling_agent(llm, tools, prompt)
+        agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
+
+        # 5. Invoke Agent
         input_text = (
             f"Please fetch the LinkedIn posts for username '{job_data['username']}' "
             f"using the RapidAPI key '{job_data['rapid_api_key']}'. "
@@ -135,16 +123,12 @@ def run_agent_job(job_data):
             "of their recent activity, tone, and main topics."
         )
 
-        try:
-            response_text = agent_executor.run(input_text)
-        except:
-            response = agent_executor.invoke({"input": input_text})
-            response_text = response.get("output")
-
+        response = agent_executor.invoke({"input": input_text})
+        
         return {
             "success": True,
             "username": job_data['username'],
-            "summary": response_text
+            "summary": response["output"]
         }
 
     except Exception as e:
