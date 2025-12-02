@@ -6,20 +6,24 @@ import requests
 import os
 from datetime import datetime, timedelta, timezone
 
-# --- LANGCHAIN IMPORTS (LEGACY COMPATIBLE) ---
-# We use try/except to handle whatever version the server gives us
+# --- ROBUST LANGCHAIN IMPORTS ---
+# 1. Import ChatOpenAI (Handle New vs Old)
 try:
     from langchain_openai import ChatOpenAI
 except ImportError:
-    # Fallback for very old versions
-    from langchain.chat_models import ChatOpenAI 
+    from langchain.chat_models import ChatOpenAI
 
-from langchain.agents import tool
-from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
+# 2. Import Tool Decorator (Handle New vs Old)
+try:
+    # Try the modern core location
+    from langchain_core.tools import tool
+except ImportError:
+    # Fallback to the classic location (This fixes your specific error)
+    from langchain.tools import tool
 
-# --- THE CRITICAL FIX ---
-# Instead of the new 'create_tool_calling_agent', we use the older 'initialize_agent'
+# 3. Import Agent Utilities
 from langchain.agents import initialize_agent, AgentType
+from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
 
 app = Flask(__name__)
 request_queue = Queue()
@@ -112,8 +116,8 @@ def run_agent_job(job_data):
         # 2. Setup Tools
         tools = [scrape_linkedin_posts]
 
-        # 3. Construct Agent (THE OLDER, SAFE WAY)
-        # This uses the OPENAI_FUNCTIONS agent type which works on older versions
+        # 3. Construct Agent (SAFE LEGACY METHOD)
+        # Using initialize_agent is safer for mixed versions
         agent_executor = initialize_agent(
             tools=tools,
             llm=llm,
@@ -131,8 +135,6 @@ def run_agent_job(job_data):
             "of their recent activity, tone, and main topics."
         )
 
-        # Older agents use .run or .invoke depending on version, .invoke is usually safe now
-        # but .run is the safest for legacy.
         try:
             response_text = agent_executor.run(input_text)
         except:
