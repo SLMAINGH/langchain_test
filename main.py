@@ -6,11 +6,20 @@ import requests
 import os
 from datetime import datetime, timedelta, timezone
 
-# --- LANGCHAIN IMPORTS ---
-from langchain_openai import ChatOpenAI
-from langchain_core.tools import tool
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain.agents import create_tool_calling_agent, AgentExecutor
+# --- LANGCHAIN IMPORTS (LEGACY COMPATIBLE) ---
+# We use try/except to handle whatever version the server gives us
+try:
+    from langchain_openai import ChatOpenAI
+except ImportError:
+    # Fallback for very old versions
+    from langchain.chat_models import ChatOpenAI 
+
+from langchain.agents import tool
+from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
+
+# --- THE CRITICAL FIX ---
+# Instead of the new 'create_tool_calling_agent', we use the older 'initialize_agent'
+from langchain.agents import initialize_agent, AgentType
 
 app = Flask(__name__)
 request_queue = Queue()
@@ -93,9 +102,9 @@ def run_agent_job(job_data):
     Sets up the agent dynamically using the provided OpenAI API Key.
     """
     try:
-        # 1. Setup LLM with the Key from the Job Data
+        # 1. Setup LLM
         llm = ChatOpenAI(
-            api_key=job_data['openai_api_key'],  # <--- DYNAMIC KEY HERE
+            api_key=job_data['openai_api_key'], 
             model="gpt-4o", 
             temperature=0
         )
@@ -103,19 +112,17 @@ def run_agent_job(job_data):
         # 2. Setup Tools
         tools = [scrape_linkedin_posts]
 
-        # 3. Create Prompt
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", "You are a professional researcher. Fetch data using tools, then summarize."),
-            ("user", "{input}"),
-            MessagesPlaceholder(variable_name="agent_scratchpad"),
-        ])
+        # 3. Construct Agent (THE OLDER, SAFE WAY)
+        # This uses the OPENAI_FUNCTIONS agent type which works on older versions
+        agent_executor = initialize_agent(
+            tools=tools,
+            llm=llm,
+            agent=AgentType.OPENAI_FUNCTIONS, 
+            verbose=True,
+            handle_parsing_errors=True
+        )
 
-        # 4. Construct Agent
-        agent = create_tool_calling_agent(llm, tools, prompt)
-        agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
-
-        # 5. Invoke Agent
-        # Note: We pass 'api_key' as 'rapid_api_key' to the tool to avoid confusion with openai key
+        # 4. Invoke Agent
         input_text = (
             f"Please fetch the LinkedIn posts for username '{job_data['username']}' "
             f"using the RapidAPI key '{job_data['rapid_api_key']}'. "
@@ -124,19 +131,25 @@ def run_agent_job(job_data):
             "of their recent activity, tone, and main topics."
         )
 
-        response = agent_executor.invoke({"input": input_text})
-        
+        # Older agents use .run or .invoke depending on version, .invoke is usually safe now
+        # but .run is the safest for legacy.
+        try:
+            response_text = agent_executor.run(input_text)
+        except:
+            response = agent_executor.invoke({"input": input_text})
+            response_text = response.get("output")
+
         return {
             "success": True,
             "username": job_data['username'],
-            "summary": response["output"]
+            "summary": response_text
         }
 
     except Exception as e:
         print(f"❌ Agent Error: {e}")
         return {
             "success": False,
-            "error": str(e) # This will catch Invalid API Key errors from OpenAI
+            "error": str(e)
         }
 
 
@@ -176,7 +189,7 @@ def process():
     request_queue.put({
         'username': data.get('username'),
         'rapid_api_key': data.get('rapid_api_key'),
-        'openai_api_key': data.get('openai_api_key'), # Passed to queue
+        'openai_api_key': data.get('openai_api_key'),
         'webhook_url': data.get('webhook_url'),
         'posted_max_days_ago': data.get('posted_max_days_ago', 30)
     })
